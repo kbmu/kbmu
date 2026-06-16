@@ -13,9 +13,9 @@ from email.mime.text import MIMEText
 # Configure logging
 logging.basicConfig(filename='trading_bot.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# API Credentials (Do not hard-code in production, use environment variables or secure storage)
-API_KEY = "organizations/3661f556-e92d-4bca-8435-392d4567379b/apiKeys/9e09027b-5961-403a-8272-8687a33b64bf"
-API_SECRET = "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIKn6RodD116PLb6vevyoqHDuUJlZDYQMr/fcPZzRMP3MoAoGCCqGSM49\nAwEHoUQDQgAEGkPbpFtVekXOEC3hhoaZG4kDwcMkF1YmbRBvpRIsyOpsVswAyXOH\nToKwI8BRYEiqK1M7osHcdZr/Fesu9nhPjQ==\n-----END EC PRIVATE KEY-----\n"
+# API credentials are loaded from environment variables, never hard-coded
+API_KEY = os.environ["COINBASE_API_KEY"]
+API_SECRET = os.environ["COINBASE_API_SECRET"]
 
 # Initialize the exchange
 exchange = ccxt.coinbase({
@@ -34,9 +34,9 @@ parameters = {
 }
 
 def send_email(subject, message):
-    sender_email = "kbmu9822@gmail.com"
-    receiver_email = "gibrilbeyene@gmail.com"
-    password = "Nahomebeyene123!"
+    sender_email = os.environ["ALERT_SENDER_EMAIL"]
+    receiver_email = os.environ["ALERT_RECEIVER_EMAIL"]
+    password = os.environ["ALERT_EMAIL_PASSWORD"]
 
     msg = MIMEText(message)
     msg['Subject'] = subject
