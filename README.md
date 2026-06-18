@@ -1,170 +1,73 @@
-import os
-import ccxt
-import pandas as pd
-import numpy as np
-import time
-import logging
-from ta.momentum import RSIIndicator
-from ta.trend import SMAIndicator, MACD
-from ta.volatility import BollingerBands
-import smtplib
-from email.mime.text import MIMEText
+# Crypto Trading Bot
 
-# Configure logging
-logging.basicConfig(filename='trading_bot.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+An algorithmic cryptocurrency trading bot that trades a configured pair on
+Coinbase via [`ccxt`](https://github.com/ccxt/ccxt), using a multi-indicator
+technical-analysis strategy.
 
-# API Credentials (Do not hard-code in production, use environment variables or secure storage)
-API_KEY = "organizations/3661f556-e92d-4bca-8435-392d4567379b/apiKeys/9e09027b-5961-403a-8272-8687a33b64bf"
-API_SECRET = "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIKn6RodD116PLb6vevyoqHDuUJlZDYQMr/fcPZzRMP3MoAoGCCqGSM49\nAwEHoUQDQgAEGkPbpFtVekXOEC3hhoaZG4kDwcMkF1YmbRBvpRIsyOpsVswAyXOH\nToKwI8BRYEiqK1M7osHcdZr/Fesu9nhPjQ==\n-----END EC PRIVATE KEY-----\n"
+> ⚠️ **This software places real orders with real money when not in dry-run
+> mode. Trading is risky and you can lose funds. Use at your own risk, and test
+> thoroughly in `DRY_RUN` mode first.**
 
-# Initialize the exchange
-exchange = ccxt.coinbase({
-    'apiKey': API_KEY,
-    'secret': API_SECRET,
-})
+## Strategy
 
-symbol = 'XRP/USD'  # Example trading pair
-parameters = {
-    'rsi_period': 14, 'sma_period': 50,
-    'macd_short': 12, 'macd_long': 26, 'macd_signal': 9,
-    'bollinger_window': 20, 'bollinger_std': 2,
-    'overbought': 70, 'oversold': 30,
-    'risk_percentage': 0.01, 'stop_loss_percentage': 0.02, 'take_profit_percentage': 0.05,
-    'trend_window': 200  # Added for trend confirmation
-}
+A trade signal requires several indicators to agree:
 
-def send_email(subject, message):
-    sender_email = "kbmu9822@gmail.com"
-    receiver_email = "gibrilbeyene@gmail.com"
-    password = "Nahomebeyene123!"
+- **RSI** (14) — overbought (70) / oversold (30)
+- **SMA** (50) — short-term trend
+- **MACD** (12/26/9) — momentum crossover
+- **Bollinger Bands** (20, 2σ) — volatility envelope
+- **Trend SMA** (200) — longer-term trend confirmation
 
-    msg = MIMEText(message)
-    msg['Subject'] = subject
-    msg['From'] = sender_email
-    msg['To'] = receiver_email
+**Buy** when oversold, price above the short SMA and long trend, MACD bullish,
+and price below the lower Bollinger band. **Sell** is the mirror condition.
+All tunables live in the `parameters` dict in `trading_bot.py`.
 
-    try:
-        with smtplib.SMTP('smtp.gmail.com', 587) as server:
-            server.starttls()
-            server.login(sender_email, password)
-            server.send_message(msg)
-        logging.info("Email sent successfully.")
-    except Exception as e:
-        logging.error(f"Failed to send email: {e}")
+## Setup
 
-def get_balance():
-    balance = exchange.fetch_balance()
-    return balance['total']['USD']  # Adjust based on your base currency
+1. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. Configure secrets and settings:
+   ```bash
+   cp .env.example .env
+   # edit .env with your real Coinbase API key/secret
+   ```
+   Create the Coinbase API key at <https://www.coinbase.com/settings/api>.
+   For email alerts, use a Gmail **App Password**, not your account password.
 
-def get_market_price():
-    ticker = exchange.fetch_ticker(symbol)
-    return ticker['last']
+## Running
 
-def fetch_historical_data():
-    # Fetch more historical data for better trend analysis
-    limit = max(parameters['trend_window'], parameters['rsi_period'], parameters['sma_period'], parameters['macd_long'], parameters['bollinger_window']) + 1
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=limit)
-    return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+```bash
+set -a && source .env && set +a   # load environment variables
+python trading_bot.py
+```
 
-def calculate_indicators(data):
-    rsi = RSIIndicator(data['close'], window=parameters['rsi_period']).rsi().iloc[-1]
-    sma = SMAIndicator(data['close'], window=parameters['sma_period']).sma_indicator().iloc[-1]
-    macd = MACD(data['close'], window_slow=parameters['macd_long'], window_fast=parameters['macd_short'], window_sign=parameters['macd_signal'])
-    macd_value = macd.macd().iloc[-1]
-    macd_signal_value = macd.macd_signal().iloc[-1]
-    bollinger = BollingerBands(data['close'], window=parameters['bollinger_window'], window_dev=parameters['bollinger_std'])
-    bollinger_upper = bollinger.bollinger_hband().iloc[-1]
-    bollinger_lower = bollinger.bollinger_lband().iloc[-1]
-    # Add trend indicator
-    trend = SMAIndicator(data['close'], window=parameters['trend_window']).sma_indicator().iloc[-1]
-    return rsi, sma, macd_value, macd_signal_value, bollinger_upper, bollinger_lower, trend
+The bot runs a quick backtest on startup, then enters a loop that evaluates the
+strategy every `LOOP_INTERVAL_SECONDS` (default 60s). Activity is written to
+`trading_bot.log` and echoed to the console.
 
-def calculate_position_size(balance):
-    risk_amount = balance * parameters['risk_percentage']
-    return risk_amount / get_market_price()
+### Dry run (default & recommended)
 
-def place_order(order_type, amount):
-    try:
-        if order_type == 'buy':
-            order = exchange.create_market_buy_order(symbol, amount)
-            logging.info(f"Buy order placed: {order}")
-            send_email("Trade Executed", f"Buy order placed: {order}")
-            return order
-        elif order_type == 'sell':
-            order = exchange.create_market_sell_order(symbol, amount)
-            logging.info(f"Sell order placed: {order}")
-            send_email("Trade Executed", f"Sell order placed: {order}")
-            return order
-    except Exception as e:
-        logging.error(f"Error placing order: {e}")
-        send_email("Order Error", f"Error placing order: {e}")
+`DRY_RUN=true` (the default) logs the orders it *would* place without sending
+them to the exchange. Only set `DRY_RUN=false` once you have verified behavior
+and intend to trade real funds.
 
-def set_stop_loss(order, stop_loss_price):
-    logging.info(f"Stop Loss set at {stop_loss_price}")
+## Security notes
 
-def set_take_profit(order, take_profit_price):
-    logging.info(f"Take Profit set at {take_profit_price}")
+- Secrets are read from environment variables only — never hard-code them.
+- `.env`, `*.log`, and key files are git-ignored. Keep them out of version
+  control.
+- If a key is ever exposed, revoke/rotate it immediately at the Coinbase API
+  settings page and change any related passwords.
 
-def backtest_strategy(data):
-    initial_balance = 1000
-    balance = initial_balance
-    position = 0
+## Known limitations
 
-    for index, row in data.iterrows():
-        indicators = calculate_indicators(data.iloc[:index + 1])
-        market_price = row['close']
+- `stop_loss_percentage` / `take_profit_percentage` are computed and logged but
+  **not yet enforced** as exchange-side protective orders. Do not rely on them
+  for risk control.
+- The backtest is simplified: no fees, slippage, or stop/take exits, and fills
+  at each candle's close.
+- There is no automated test suite yet.
 
-        if indicators[0] < parameters['oversold'] and market_price > indicators[1] and indicators[2] > indicators[3] and market_price < indicators[5] and market_price > indicators[6]:
-            position_size = calculate_position_size(balance)
-            position += position_size
-            balance -= position_size * market_price
-            logging.info(f"Backtest Buy: {position_size} XRP at {market_price}")
-
-        elif indicators[0] > parameters['overbought'] and market_price < indicators[1] and indicators[2] < indicators[3] and market_price > indicators[4] and market_price < indicators[6]:
-            balance += position * market_price
-            logging.info(f"Backtest Sell: {position} XRP at {market_price}")
-            position = 0
-
-    final_balance = balance + position * market_price
-    logging.info(f"Backtest completed. Initial Balance: {initial_balance}, Final Balance: {final_balance}")
-
-def main():
-    historical_data = fetch_historical_data()
-    backtest_strategy(historical_data)
-
-    while True:
-        try:
-            market_price = get_market_price()
-            logging.info(f"Current market price: {market_price}")
-
-            historical_data = fetch_historical_data()
-            indicators = calculate_indicators(historical_data)
-            logging.info(f"Current indicators: {indicators}")
-
-            balance = get_balance()
-            position_size = calculate_position_size(balance)
-
-            # Strategy with trend confirmation
-            if indicators[0] < parameters['oversold'] and market_price > indicators[1] and indicators[2] > indicators[3] and market_price < indicators[5] and market_price > indicators[6]:
-                logging.info("Placing buy order...")
-                order = place_order('buy', position_size)
-                stop_loss_price = market_price * (1 - parameters['stop_loss_percentage'])
-                take_profit_price = market_price * (1 + parameters['take_profit_percentage'])
-                set_stop_loss(order, stop_loss_price)
-                set_take_profit(order, take_profit_price)
-
-            elif indicators[0] > parameters['overbought'] and market_price < indicators[1] and indicators[2] < indicators[3] and market_price > indicators[4] and market_price < indicators[6]:
-                logging.info("Placing sell order...")
-                order = place_order('sell', position_size)
-                stop_loss_price = market_price * (1 + parameters['stop_loss_percentage'])
-                take_profit_price = market_price * (1 - parameters['take_profit_percentage'])
-                set_stop_loss(order, stop_loss_price)
-                set_take_profit(order, take_profit_price)
-
-            time.sleep(60)  # Wait for a minute before the next check
-        except Exception as e:
-            logging.error(f"An error occurred in main loop: {e}")
-            time.sleep(60)  # Wait before retrying
-
-if __name__ == "__main__":
-    main()
+See `CLAUDE.md` for guidance aimed at AI assistants working in this repo.

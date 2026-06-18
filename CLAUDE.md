@@ -2,139 +2,122 @@
 
 Guidance for AI assistants (and humans) working in this repository.
 
-## ⚠️ Security alert — read first
+## Security — read first
 
-`README.md` currently contains **hardcoded, live-looking secrets** committed in
-plaintext:
+Secrets must **never** be hard-coded in source. They are read from environment
+variables only (see `.env.example`). `.env`, `*.log`, and key files are
+git-ignored.
 
-- A Coinbase Advanced Trade **API key** and **EC private key** (`API_KEY` /
-  `API_SECRET`).
-- A Gmail account **address and password** used for SMTP notifications
-  (`send_email`).
-
-These are exposed in git history and must be treated as **compromised**.
-If you are assisting the owner, the priority actions are:
-
-1. **Revoke/rotate** the Coinbase API key and change the Gmail password
-   immediately (use a Gmail App Password, not the account password).
-2. Move all secrets to environment variables (e.g. `os.environ[...]`) or a
-   `.env` file that is **git-ignored**.
-3. Scrub the secrets from git history (`git filter-repo` or BFG) before the
-   repository is shared or made public.
-
-**Never** reproduce these secret values in commits, comments, PRs, chat, or any
-other artifact. When editing the code, remove the literals rather than copying
-them.
+History note: earlier commits of `README.md` contained a live Coinbase API
+key/EC private key and a Gmail password. **Those credentials have since been
+revoked/rotated by the owner** and the current working tree no longer contains
+them. They do, however, still exist in older git commits. If this repo is ever
+made public, scrub history first with `git filter-repo` or BFG. Never reproduce
+any secret value in commits, comments, PRs, or chat.
 
 ## What this repository is
 
-A single-file **algorithmic cryptocurrency trading bot** written in Python. It
-trades a configured pair (default `XRP/USD`) on Coinbase via the
+An **algorithmic cryptocurrency trading bot** written in Python. It trades a
+configured pair (default `XRP/USD`) on Coinbase via the
 [`ccxt`](https://github.com/ccxt/ccxt) library, using a multi-indicator
-technical-analysis strategy with email notifications.
+technical-analysis strategy with optional email notifications.
 
-> Note: the program lives in `README.md`, but its contents are **Python source
-> code**, not Markdown documentation. See "Known issues / conventions" below.
+The bot defaults to **`DRY_RUN` mode** — it logs the orders it *would* place
+without sending them to the exchange. Real trading only happens when
+`DRY_RUN=false`.
 
 ## Repository structure
 
 ```
 .
-├── README.md     # The entire trading bot (Python source, ~170 lines)
-└── CLAUDE.md     # This file
+├── trading_bot.py   # The trading bot (single-module Python program)
+├── requirements.txt # Python dependencies (ccxt, pandas, numpy, ta)
+├── .env.example     # Template for required environment variables
+├── .gitignore       # Ignores .env, logs, key files, Python caches
+├── README.md        # User-facing setup & usage docs
+└── CLAUDE.md        # This file
 ```
-
-There is currently no `requirements.txt`, no test suite, no package layout, and
-no separate `.py` entry point. The whole program is in one file.
 
 ## How the bot works
 
-The strategy combines several indicators (from the [`ta`](https://github.com/bukosabino/ta)
+The strategy combines indicators (from the [`ta`](https://github.com/bukosabino/ta)
 library) and only trades when they agree:
 
-- **RSI** (period 14) — overbought (70) / oversold (30) thresholds.
-- **SMA** (period 50) — short-term trend.
-- **MACD** (12/26/9) — momentum crossover.
-- **Bollinger Bands** (window 20, 2 std) — volatility envelope.
-- **Trend SMA** (window 200) — longer-term trend confirmation.
+- **RSI** (14) — overbought (70) / oversold (30)
+- **SMA** (50) — short-term trend
+- **MACD** (12/26/9) — momentum crossover
+- **Bollinger Bands** (20, 2σ) — volatility envelope
+- **Trend SMA** (200) — longer-term trend confirmation
 
-All tunable values live in the `parameters` dict near the top of the file
-(periods, thresholds, `risk_percentage`, `stop_loss_percentage`,
-`take_profit_percentage`, `trend_window`).
+All tunables live in the `parameters` dict near the top of `trading_bot.py`.
 
 Key functions:
 
 | Function | Responsibility |
 |----------|----------------|
-| `send_email` | SMTP notification on trades/errors |
-| `get_balance` | Fetch account USD balance via ccxt |
-| `get_market_price` | Latest ticker price |
-| `fetch_historical_data` | OHLCV candles (1m timeframe) into a pandas DataFrame |
-| `calculate_indicators` | Compute the indicator tuple used by the strategy |
-| `calculate_position_size` | Size a position from balance × risk_percentage |
-| `place_order` | Submit market buy/sell orders, notify by email |
-| `set_stop_loss` / `set_take_profit` | Currently **log only** — they do not place real protective orders |
-| `backtest_strategy` | Replays historical candles against the strategy |
-| `main` | Backtests once, then runs an infinite live loop (60s interval) |
+| `build_exchange` | Construct the ccxt client; errors if credentials are missing |
+| `send_email` | Optional SMTP notification; no-op if email env vars are unset |
+| `get_balance` / `get_market_price` | Account balance / latest price via ccxt |
+| `fetch_historical_data` | OHLCV candles (1m) into a pandas DataFrame |
+| `calculate_indicators` | Returns an `Indicators` namedtuple (no positional indexing) |
+| `position_size_for` | Size a position from `balance × risk_percentage / price` |
+| `should_buy` / `should_sell` | Named strategy conditions |
+| `place_order` | Submit market orders, or simulate them when `DRY_RUN` is on |
+| `backtest_strategy` | Replays the strategy over historical candles only |
+| `run_once` | One live decision cycle |
+| `main` | Backtests once, then loops every `LOOP_INTERVAL_SECONDS` |
 
-Execution flow (`main`): backtest on startup → then loop forever: fetch price →
-fetch candles → compute indicators → check buy/sell conditions → place order →
-sleep 60s. Errors are caught and logged, then the loop retries.
+Execution flow (`main`): validate creds → backtest on startup → loop: fetch
+price → fetch candles → compute indicators → check buy/sell → place (or
+simulate) order → sleep. Loop errors are logged and the loop continues.
 
-Logging goes to `trading_bot.log` (configured via `logging.basicConfig`).
+Logging goes to `trading_bot.log` and is echoed to the console.
+
+## Configuration (environment variables)
+
+Read by `trading_bot.py`; see `.env.example` for the template.
+
+- `COINBASE_API_KEY`, `COINBASE_API_SECRET` — required.
+- `TRADING_SYMBOL` (default `XRP/USD`), `LOOP_INTERVAL_SECONDS` (default 60).
+- `DRY_RUN` (default `true`) — set `false` only to trade real funds.
+- `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `NOTIFY_EMAIL` — optional email alerts
+  (use a Gmail App Password, not the account password).
 
 ## Development workflow
 
-There is no build system. To run or modify the bot:
+```bash
+pip install -r requirements.txt
+cp .env.example .env            # then edit .env with real values
+set -a && source .env && set +a # load env vars
+python trading_bot.py
+```
 
-1. **Treat `README.md` as Python.** Either copy it to a `.py` file or rename it
-   (recommended — see below) before running.
-2. Install dependencies (no manifest exists yet; these are the imports used):
-   ```bash
-   pip install ccxt pandas numpy ta
-   ```
-   (`os`, `time`, `logging`, `smtplib`, `email` are standard library.)
-3. Provide credentials via environment variables (after the security fix), then:
-   ```bash
-   python trading_bot.py
-   ```
+Quick syntax check: `python -m py_compile trading_bot.py`.
 
-### Git conventions for this repo
+### Git conventions
 
 - Active development branch: **`claude/claude-md-docs-ssv7hd`** (do not push to
   `main` without explicit permission).
 - Push with `git push -u origin <branch-name>`.
 - Do not open pull requests unless explicitly asked.
 
-## Known issues & recommended conventions
+## Known issues & conventions for future changes
 
-When asked to improve this codebase, keep these in mind:
-
-- **Secrets**: highest priority — see the security alert above.
-- **Misnamed file**: the code should live in something like `trading_bot.py`,
-  with a real `README.md` for documentation. Preserve this only if the owner
-  has an external reason for the current layout.
-- **No dependency manifest**: add a `requirements.txt` (or `pyproject.toml`)
-  pinning `ccxt`, `pandas`, `numpy`, `ta`.
-- **Stop-loss / take-profit are not enforced**: `set_stop_loss` and
-  `set_take_profit` only write log lines; no protective orders are placed on the
-  exchange. Flag this before relying on them.
-- **Backtest realism**: `backtest_strategy` calls `get_market_price()` (a live
-  network call) and `calculate_position_size()` during replay, mixing live data
-  into historical simulation. This is a correctness bug to surface, not silently
-  "fix," since it changes behavior.
-- **No tests**: there is no automated testing. New logic should ideally come
-  with at least a smoke test that mocks the `ccxt` exchange.
-- **Live trading risk**: this code places **real market orders**. Never run it
-  against a funded account for testing — use ccxt sandbox/paper mode or mocked
-  responses.
+- **Secrets**: keep them in env vars only; never hard-code or echo them.
+- **Stop-loss / take-profit not enforced**: target prices are computed and
+  logged but no protective orders are placed on the exchange. Flag this before
+  relying on them; implementing real bracket/OCO orders is a known TODO.
+- **Backtest is simplified**: no fees, slippage, or stop/take exits; fills at
+  each candle's close. (It no longer makes live network calls during replay.)
+- **No tests yet**: new logic should come with at least a smoke test that mocks
+  the `ccxt` exchange.
+- **Live trading risk**: this code can place **real market orders**. Keep
+  `DRY_RUN=true` for any testing; never point it at a funded account casually.
 
 ## Guidance for AI assistants
 
-- Do not paste, echo, or relocate the embedded credentials. If you must edit
-  lines containing them, replace the literals with environment-variable lookups.
-- Be conservative with anything that affects live trading behavior — explain
-  trade-offs and ask before changing order logic, sizing, or thresholds.
-- Match the existing code style (procedural, single-module, `logging`-based) when
-  making small changes; propose a restructure explicitly rather than doing it
-  implicitly.
+- Never paste, echo, or relocate credentials; use environment-variable lookups.
+- Be conservative with anything affecting live trading behavior — explain
+  trade-offs and confirm before changing order logic, sizing, or thresholds.
+- Match the existing style (single-module, procedural, `logging`-based) for
+  small changes; propose larger restructures explicitly.
