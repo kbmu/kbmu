@@ -223,24 +223,34 @@ def trade_fee(notional):
 
 
 def should_buy(ind, price):
-    """Buy when oversold, in an uptrend, with bullish momentum near the lower band."""
+    """Buy an oversold dip during an uptrend.
+
+    Enters when RSI is oversold and price has stretched below the lower
+    Bollinger band, but only while the longer-term trend is up (price above the
+    trend SMA, and the short SMA above the trend SMA).
+
+    Note: the original rule also required ``price > sma`` *and* ``price <
+    bb_lower`` simultaneously, which is self-contradictory (the lower band sits
+    below the average) and meant the bot never opened a trade.
+    """
     return (
         ind.rsi < parameters["oversold"]
-        and price > ind.sma
-        and ind.macd > ind.macd_signal
         and price < ind.bb_lower
         and price > ind.trend
+        and ind.sma > ind.trend
     )
 
 
 def should_sell(ind, price):
-    """Sell when overbought, in a downtrend, with bearish momentum near the upper band."""
+    """Exit on overbought exhaustion with momentum rolling over.
+
+    Closes when RSI is overbought and price has stretched above the upper
+    Bollinger band while MACD has crossed below its signal line.
+    """
     return (
         ind.rsi > parameters["overbought"]
-        and price < ind.sma
-        and ind.macd < ind.macd_signal
         and price > ind.bb_upper
-        and price < ind.trend
+        and ind.macd < ind.macd_signal
     )
 
 

@@ -40,15 +40,15 @@ def make_indicators(**overrides):
 
 
 def buy_signal_indicators():
-    # rsi < oversold, price > sma, macd > signal, price < bb_lower, price > trend
-    return make_indicators(rsi=20.0, sma=80.0, macd=1.0, macd_signal=0.0,
-                           bb_lower=200.0, trend=50.0)
+    # Oversold dip in an uptrend (evaluated at price 100.0):
+    # rsi < oversold, price < bb_lower, price > trend, sma > trend.
+    return make_indicators(rsi=20.0, sma=110.0, bb_lower=105.0, trend=95.0)
 
 
 def sell_signal_indicators():
-    # rsi > overbought, price < sma, macd < signal, price > bb_upper, price < trend
-    return make_indicators(rsi=80.0, sma=200.0, macd=0.0, macd_signal=1.0,
-                           bb_upper=50.0, trend=200.0)
+    # Overbought exhaustion (evaluated at price 100.0):
+    # rsi > overbought, price > bb_upper, macd < macd_signal.
+    return make_indicators(rsi=80.0, bb_upper=95.0, macd=0.0, macd_signal=1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -62,6 +62,14 @@ def test_should_buy_true_when_all_conditions_met():
 def test_should_buy_false_when_rsi_not_oversold():
     ind = buy_signal_indicators()._replace(rsi=50.0)
     assert bot.should_buy(ind, price=100.0) is False
+
+
+def test_should_buy_triggers_on_dip_below_short_sma():
+    # Regression: the old rule required price > sma AND price < bb_lower at once
+    # (contradictory), so it never fired. A dip below the short SMA must buy.
+    ind = make_indicators(rsi=20.0, sma=110.0, bb_lower=105.0, trend=95.0)
+    assert ind.bb_lower < ind.sma  # price below band is also below the short SMA
+    assert bot.should_buy(ind, price=100.0) is True
 
 
 def test_should_sell_true_when_all_conditions_met():

@@ -18,9 +18,11 @@ A trade signal requires several indicators to agree:
 - **Bollinger Bands** (20, 2σ) — volatility envelope
 - **Trend SMA** (200) — longer-term trend confirmation
 
-**Buy** when oversold, price above the short SMA and long trend, MACD bullish,
-and price below the lower Bollinger band. **Sell** is the mirror condition.
-All tunables live in the `parameters` dict in `trading_bot.py`.
+**Buy** an oversold dip in an uptrend: RSI oversold, price below the lower
+Bollinger band, and the trend up (price above the 200-period trend SMA, with the
+50-period SMA above the trend SMA). **Sell** (close) on overbought exhaustion:
+RSI overbought, price above the upper Bollinger band, and MACD crossed below its
+signal line. All tunables live in the `parameters` dict in `trading_bot.py`.
 
 The bot is **long-only** and tracks one position at a time: it buys to open,
 then closes on whichever comes first — a stop-loss hit, a take-profit hit, or a
@@ -114,5 +116,10 @@ the bot resumes managing exits for a trade opened in a previous run.
 - The backtest now models a per-side fee (`fee_rate`) and `slippage`, but still
   fills at each candle's close and always uses bot-side exits, so it remains an
   approximation.
+- **The strategy is illustrative, not a proven edge.** Its entry/exit rules were
+  corrected so the bot actually trades (the original rules were self-contradictory
+  and never fired), but the logic has only been exercised on synthetic price
+  data, where it breaks even minus fees as expected. Validate on real historical
+  data and in dry-run before risking funds.
 
 See `CLAUDE.md` for guidance aimed at AI assistants working in this repo.

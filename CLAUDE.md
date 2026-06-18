@@ -149,6 +149,11 @@ Quick syntax check: `python -m py_compile trading_bot.py`.
 
 ## Known issues & conventions for future changes
 
+- **Strategy is illustrative, not validated**: `should_buy`/`should_sell` were
+  corrected because the inherited rules were self-contradictory (e.g. requiring
+  `price > sma` and `price < bb_lower` at once) and never fired. The refined
+  rules trade, but have only been exercised on synthetic data (break-even minus
+  fees, as expected for a random walk). Don't present them as a proven edge.
 - **Secrets**: keep them in env vars only; never hard-code or echo them.
 - **Exchange-side bracket orders are unverified**: `place_protective_orders`
   uses ccxt unified params that have not been confirmed against live Coinbase.
