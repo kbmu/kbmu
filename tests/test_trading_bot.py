@@ -356,3 +356,57 @@ def test_save_none_removes_state_file(tmp_path):
 
 def test_load_position_missing_file_returns_none(tmp_path):
     assert bot.load_position(path=str(tmp_path / "nope.json")) is None
+
+
+# --------------------------------------------------------------------------- #
+# Backtest fees & slippage
+# --------------------------------------------------------------------------- #
+
+def test_fill_prices_apply_slippage(monkeypatch):
+    bot.parameters["slippage"] = 0.001
+    assert bot.buy_fill_price(100.0) == pytest.approx(100.1)   # worse for buyer
+    assert bot.sell_fill_price(100.0) == pytest.approx(99.9)   # worse for seller
+
+
+def test_trade_fee_is_fraction_of_notional():
+    bot.parameters["fee_rate"] = 0.006
+    assert bot.trade_fee(1000.0) == pytest.approx(6.0)
+
+
+def test_backtest_round_trip_loses_to_fees_and_slippage(monkeypatch):
+    # Force a buy then a sell at a flat price; with fees+slippage the final
+    # balance must be below the starting balance.
+    monkeypatch.setitem(bot.parameters, "fee_rate", 0.006)
+    monkeypatch.setitem(bot.parameters, "slippage", 0.001)
+
+    signals = iter([buy_signal_indicators(), sell_signal_indicators()])
+
+    def fake_indicators(_window):
+        try:
+            return next(signals)
+        except StopIteration:
+            return make_indicators()
+
+    monkeypatch.setattr(bot, "calculate_indicators", fake_indicators)
+
+    final_balance = bot.backtest_strategy(_candles(100.0, n=205))
+    assert final_balance is not None
+    assert final_balance < 1000.0
+
+
+def test_backtest_zero_fees_zero_slippage_flat_market_breaks_even(monkeypatch):
+    monkeypatch.setitem(bot.parameters, "fee_rate", 0.0)
+    monkeypatch.setitem(bot.parameters, "slippage", 0.0)
+
+    signals = iter([buy_signal_indicators(), sell_signal_indicators()])
+
+    def fake_indicators(_window):
+        try:
+            return next(signals)
+        except StopIteration:
+            return make_indicators()
+
+    monkeypatch.setattr(bot, "calculate_indicators", fake_indicators)
+
+    final_balance = bot.backtest_strategy(_candles(100.0, n=205))
+    assert final_balance == pytest.approx(1000.0)

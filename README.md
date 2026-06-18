@@ -75,7 +75,8 @@ pytest
 ```
 
 The tests mock the ccxt exchange, so they make no network calls and place no
-orders.
+orders. They also run automatically on every push and pull request via GitHub
+Actions (`.github/workflows/tests.yml`).
 
 ## Exchange-side protective orders (optional, unverified)
 
@@ -110,7 +111,8 @@ the bot resumes managing exits for a trade opened in a previous run.
   runs; see the exchange-side option above for stronger guarantees.
 - Exchange-side bracket orders are **unverified** against live Coinbase — test
   before relying on them.
-- The backtest is simplified: no fees or slippage; fills at each candle's close,
-  and it always uses bot-side exits.
+- The backtest now models a per-side fee (`fee_rate`) and `slippage`, but still
+  fills at each candle's close and always uses bot-side exits, so it remains an
+  approximation.
 
 See `CLAUDE.md` for guidance aimed at AI assistants working in this repo.

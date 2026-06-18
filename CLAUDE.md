@@ -89,7 +89,8 @@ Key functions:
 | `place_order` | Submit market orders, or simulate them when `DRY_RUN` is on |
 | `place_protective_orders` / `cancel_protective_orders` / `protective_order_filled` | Exchange-side bracket order lifecycle (opt-in) |
 | `save_position` / `load_position` | Persist/restore the open `Position` (JSON) |
-| `backtest_strategy` | Replays the strategy (incl. SL/TP exits) over historical candles |
+| `buy_fill_price` / `sell_fill_price` / `trade_fee` | Backtest slippage & fee modelling |
+| `backtest_strategy` | Replays the strategy (incl. SL/TP, fees, slippage); returns final balance |
 | `run_once` | One live decision cycle; takes/returns the current `Position` |
 | `main` | Backtests once, then loops every `LOOP_INTERVAL_SECONDS` |
 
@@ -110,6 +111,9 @@ Tests mock the ccxt exchange (no network, no real orders). `evaluate`,
 `should_buy`/`should_sell`, `position_size_for`, `protective_levels`, and
 `place_order` are pure/easily mocked — keep them that way so new logic stays
 testable. Tests force `DRY_RUN` via `monkeypatch.setattr(bot, "DRY_RUN", ...)`.
+
+CI runs the suite on every push and PR via `.github/workflows/tests.yml`
+(Python 3.11 and 3.12).
 
 ## Configuration (environment variables)
 
@@ -152,8 +156,9 @@ Quick syntax check: `python -m py_compile trading_bot.py`.
   Bot-side monitoring remains the default and the reliable fallback.
 - **Bot-side exits run once per cycle**: even with persistence, a stopped process
   or a price gap between checks can delay/miss a bot-side exit.
-- **Backtest is simplified**: no fees or slippage; fills at each candle's close,
-  always using bot-side exits. It makes no network calls.
+- **Backtest models fees & slippage** (`fee_rate`, `slippage` parameters) and
+  returns the final balance, but still fills at each candle's close and always
+  uses bot-side exits. It makes no network calls.
 - **Live trading risk**: this code can place **real market orders**. Keep
   `DRY_RUN=true` for any testing; never point it at a funded account casually.
 

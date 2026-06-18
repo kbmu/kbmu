@@ -79,6 +79,10 @@ parameters = {
     "stop_loss_percentage": 0.02,
     "take_profit_percentage": 0.05,
     "trend_window": 200,  # Longer-term trend confirmation
+    # Backtest realism. fee_rate is per-side taker fee (Coinbase taker ~0.6%);
+    # slippage is the fraction the fill price moves against you per trade.
+    "fee_rate": 0.006,
+    "slippage": 0.0005,
 }
 
 # Named indicator bundle so callers don't rely on positional tuple indexes.
@@ -201,6 +205,21 @@ def position_size_for(balance, price):
         return 0.0
     risk_amount = balance * parameters["risk_percentage"]
     return risk_amount / price
+
+
+def buy_fill_price(price):
+    """Backtest buy fill, moved up by slippage (worse for the buyer)."""
+    return price * (1 + parameters["slippage"])
+
+
+def sell_fill_price(price):
+    """Backtest sell fill, moved down by slippage (worse for the seller)."""
+    return price * (1 - parameters["slippage"])
+
+
+def trade_fee(notional):
+    """Per-side fee on a trade's notional value."""
+    return abs(notional) * parameters["fee_rate"]
 
 
 def should_buy(ind, price):
@@ -405,8 +424,9 @@ def backtest_strategy(data):
     """Replay the strategy over historical candles using only historical data.
 
     Models the same long-only state machine as live trading, including
-    stop-loss / take-profit exits, with each candle's close as the fill price.
-    Note: it does not model fees or slippage.
+    stop-loss / take-profit exits. Each candle's close is the reference price;
+    fills include slippage and a per-side fee (see the `fee_rate` / `slippage`
+    parameters). It still makes no network calls.
     """
     initial_balance = 1000.0
     balance = initial_balance
@@ -422,34 +442,43 @@ def backtest_strategy(data):
 
         action, reason = evaluate(position, ind, market_price)
         if action == "open":
-            size = position_size_for(balance, market_price)
+            fill = buy_fill_price(market_price)
+            size = position_size_for(balance, fill)
             if size > 0:
+                notional = size * fill
+                balance -= notional + trade_fee(notional)
                 stop_loss, take_profit = protective_levels(market_price)
                 position = Position(size, market_price, stop_loss, take_profit)
-                balance -= size * market_price
-                logging.info("Backtest Buy: %s %s at %s", size, SYMBOL, market_price)
+                logging.info("Backtest Buy: %s %s at %s (incl. fees)", size, SYMBOL, fill)
         elif action == "close":
-            balance += position.size * market_price
+            fill = sell_fill_price(market_price)
+            notional = position.size * fill
+            balance += notional - trade_fee(notional)
             logging.info(
-                "Backtest Sell (%s): %s %s at %s",
+                "Backtest Sell (%s): %s %s at %s (incl. fees)",
                 reason,
                 position.size,
                 SYMBOL,
-                market_price,
+                fill,
             )
             position = None
 
     if market_price is None:
         logging.warning("Backtest skipped: not enough historical data for warmup.")
-        return
+        return None
 
-    held = position.size if position else 0.0
-    final_balance = balance + held * market_price
+    if position:
+        # Liquidate any open position at the final price for reporting.
+        fill = sell_fill_price(market_price)
+        notional = position.size * fill
+        balance += notional - trade_fee(notional)
+    final_balance = balance
     logging.info(
         "Backtest completed. Initial Balance: %s, Final Balance: %s",
         initial_balance,
         final_balance,
     )
+    return final_balance
 
 
 def run_once(exchange, position):
