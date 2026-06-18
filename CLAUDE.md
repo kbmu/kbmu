@@ -56,12 +56,22 @@ library) and only trades when they agree:
 All tunables live in the `parameters` dict near the top of `trading_bot.py`.
 
 The bot is **long-only** and tracks a single open position via the `Position`
-namedtuple (`size`, `entry_price`, `stop_loss`, `take_profit`). The decision
-logic is a small state machine in `evaluate`: when flat, a buy signal opens a
-position; when in a position, a stop-loss or take-profit hit (priority) or a
-sell signal closes it. Protective exits are enforced **bot-side** (price checked
-each cycle), not as exchange-side bracket/OCO orders, and the position is held
-**in memory only** (lost on restart).
+namedtuple (`size`, `entry_price`, `stop_loss`, `take_profit`,
+`protective_order_ids`). The decision logic is a small state machine in
+`evaluate`: when flat, a buy signal opens a position; when in a position, a
+stop-loss or take-profit hit (priority) or a sell signal closes it.
+
+Exits can be enforced two ways:
+
+- **Bot-side (default):** price is checked against the levels each cycle.
+- **Exchange-side (opt-in, `USE_EXCHANGE_PROTECTIVE_ORDERS=true`):** a server-side
+  bracket/OCO order is placed at entry; `evaluate` is called with
+  `exchange_managed_exits=True` so it doesn't double-close on price, and
+  `run_once` reconciles a filled bracket back to flat. This path is **unverified
+  against live Coinbase** — treat changes to it conservatively.
+
+The position is persisted to `POSITION_STATE_FILE` after each cycle and reloaded
+on startup (`save_position` / `load_position`), so exits survive a restart.
 
 Key functions:
 
@@ -75,8 +85,10 @@ Key functions:
 | `position_size_for` | Size a position from `balance × risk_percentage / price` |
 | `should_buy` / `should_sell` | Named strategy conditions |
 | `protective_levels` | Compute stop-loss / take-profit prices for a long entry |
-| `evaluate` | Pure state machine returning `(action, reason)` for a cycle |
+| `evaluate` | Pure state machine returning `(action, reason)`; `exchange_managed_exits` skips bot-side SL/TP |
 | `place_order` | Submit market orders, or simulate them when `DRY_RUN` is on |
+| `place_protective_orders` / `cancel_protective_orders` / `protective_order_filled` | Exchange-side bracket order lifecycle (opt-in) |
+| `save_position` / `load_position` | Persist/restore the open `Position` (JSON) |
 | `backtest_strategy` | Replays the strategy (incl. SL/TP exits) over historical candles |
 | `run_once` | One live decision cycle; takes/returns the current `Position` |
 | `main` | Backtests once, then loops every `LOOP_INTERVAL_SECONDS` |
@@ -106,6 +118,10 @@ Read by `trading_bot.py`; see `.env.example` for the template.
 - `COINBASE_API_KEY`, `COINBASE_API_SECRET` — required.
 - `TRADING_SYMBOL` (default `XRP/USD`), `LOOP_INTERVAL_SECONDS` (default 60).
 - `DRY_RUN` (default `true`) — set `false` only to trade real funds.
+- `USE_EXCHANGE_PROTECTIVE_ORDERS` (default `false`) — opt into server-side
+  bracket exits (unverified against live Coinbase).
+- `POSITION_STATE_FILE` (default `position_state.json`) — where the open position
+  is persisted.
 - `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `NOTIFY_EMAIL` — optional email alerts
   (use a Gmail App Password, not the account password).
 
@@ -130,15 +146,14 @@ Quick syntax check: `python -m py_compile trading_bot.py`.
 ## Known issues & conventions for future changes
 
 - **Secrets**: keep them in env vars only; never hard-code or echo them.
-- **Protective exits are bot-side, not exchange-side**: stop-loss / take-profit
-  are enforced by the running bot checking price each cycle, not by bracket/OCO
-  orders on the exchange. If the process stops, or price gaps between checks,
-  exits are late or missed. Real exchange-side protective orders remain a TODO.
-- **Position state is in-memory**: a restart forgets any open position, so the
-  bot won't manage exits for a trade opened in a previous run. Persisting state
-  is a possible improvement.
-- **Backtest is simplified**: no fees or slippage; fills at each candle's close.
-  It models the same SL/TP/sell-signal exits as live and makes no network calls.
+- **Exchange-side bracket orders are unverified**: `place_protective_orders`
+  uses ccxt unified params that have not been confirmed against live Coinbase.
+  Be conservative changing this path; it must be tested with minimal real funds.
+  Bot-side monitoring remains the default and the reliable fallback.
+- **Bot-side exits run once per cycle**: even with persistence, a stopped process
+  or a price gap between checks can delay/miss a bot-side exit.
+- **Backtest is simplified**: no fees or slippage; fills at each candle's close,
+  always using bot-side exits. It makes no network calls.
 - **Live trading risk**: this code can place **real market orders**. Keep
   `DRY_RUN=true` for any testing; never point it at a funded account casually.
 

@@ -231,3 +231,128 @@ def test_backtest_runs_without_network():
     data.loc[:, "close"] = [100.0 + (i % 7) for i in range(len(data))]
     # Should complete without raising and without calling any exchange.
     bot.backtest_strategy(data)
+
+
+# --------------------------------------------------------------------------- #
+# Exchange-managed exits in evaluate()
+# --------------------------------------------------------------------------- #
+
+def test_evaluate_skips_stop_loss_when_exchange_managed():
+    pos = bot.Position(size=5.0, entry_price=100.0, stop_loss=98.0, take_profit=105.0)
+    # Price below stop loss, but the exchange owns the exit: should hold here.
+    action, _ = bot.evaluate(pos, make_indicators(), price=97.0, exchange_managed_exits=True)
+    assert action == "hold"
+
+
+def test_evaluate_still_closes_on_sell_signal_when_exchange_managed():
+    pos = bot.Position(size=5.0, entry_price=100.0, stop_loss=98.0, take_profit=105.0)
+    action, reason = bot.evaluate(
+        pos, sell_signal_indicators(), price=100.0, exchange_managed_exits=True
+    )
+    assert action == "close"
+    assert reason == "sell_signal"
+
+
+# --------------------------------------------------------------------------- #
+# Exchange-side protective (bracket) orders
+# --------------------------------------------------------------------------- #
+
+def test_place_protective_orders_dry_run_places_nothing(monkeypatch):
+    monkeypatch.setattr(bot, "DRY_RUN", True)
+    exchange = MagicMock()
+    assert bot.place_protective_orders(exchange, 5.0, 98.0, 105.0) == []
+    exchange.create_order.assert_not_called()
+
+
+def test_place_protective_orders_live_places_bracket(monkeypatch):
+    monkeypatch.setattr(bot, "DRY_RUN", False)
+    exchange = MagicMock()
+    exchange.create_order.return_value = {"id": "bracket-1"}
+    ids = bot.place_protective_orders(exchange, 5.0, 98.0, 105.0)
+    assert ids == ["bracket-1"]
+    exchange.create_order.assert_called_once_with(
+        bot.SYMBOL, "limit", "sell", 5.0, 105.0, {"stopLossPrice": 98.0}
+    )
+
+
+def test_place_protective_orders_falls_back_on_error(monkeypatch):
+    monkeypatch.setattr(bot, "DRY_RUN", False)
+    exchange = MagicMock()
+    exchange.create_order.side_effect = RuntimeError("not supported")
+    assert bot.place_protective_orders(exchange, 5.0, 98.0, 105.0) == []
+
+
+def test_protective_order_filled_detects_closed(monkeypatch):
+    monkeypatch.setattr(bot, "DRY_RUN", False)
+    exchange = MagicMock()
+    exchange.fetch_order.return_value = {"status": "closed"}
+    assert bot.protective_order_filled(exchange, ("bracket-1",)) is True
+
+
+def test_protective_order_filled_returns_none_on_error(monkeypatch):
+    monkeypatch.setattr(bot, "DRY_RUN", False)
+    exchange = MagicMock()
+    exchange.fetch_order.side_effect = RuntimeError("network")
+    assert bot.protective_order_filled(exchange, ("bracket-1",)) is None
+
+
+def test_cancel_protective_orders_calls_exchange(monkeypatch):
+    monkeypatch.setattr(bot, "DRY_RUN", False)
+    exchange = MagicMock()
+    bot.cancel_protective_orders(exchange, ("bracket-1",))
+    exchange.cancel_order.assert_called_once_with("bracket-1", bot.SYMBOL)
+
+
+def test_run_once_reconciles_filled_bracket(monkeypatch):
+    monkeypatch.setattr(bot, "DRY_RUN", False)
+    monkeypatch.setattr(bot, "USE_EXCHANGE_PROTECTIVE_ORDERS", True)
+    monkeypatch.setattr(bot, "get_market_price", lambda ex: 100.0)
+    exchange = MagicMock()
+    exchange.fetch_order.return_value = {"status": "closed"}
+    pos = bot.Position(5.0, 100.0, 98.0, 105.0, ("bracket-1",))
+    # Should detect the fill and report flat without re-selling.
+    assert bot.run_once(exchange, pos) is None
+    exchange.create_market_sell_order.assert_not_called()
+
+
+def test_run_once_open_places_bracket_when_enabled(monkeypatch):
+    monkeypatch.setattr(bot, "DRY_RUN", False)
+    monkeypatch.setattr(bot, "USE_EXCHANGE_PROTECTIVE_ORDERS", True)
+    monkeypatch.setattr(bot, "send_email", lambda *a, **k: None)
+    monkeypatch.setattr(bot, "get_market_price", lambda ex: 100.0)
+    monkeypatch.setattr(bot, "get_balance", lambda ex: 1000.0)
+    monkeypatch.setattr(bot, "fetch_historical_data", lambda ex: _candles(100.0))
+    monkeypatch.setattr(bot, "calculate_indicators", lambda data: buy_signal_indicators())
+    exchange = MagicMock()
+    exchange.create_market_buy_order.return_value = {"id": "buy-1"}
+    exchange.create_order.return_value = {"id": "bracket-1"}
+
+    position = bot.run_once(exchange, None)
+    assert position is not None
+    assert position.protective_order_ids == ("bracket-1",)
+    exchange.create_order.assert_called_once()
+
+
+# --------------------------------------------------------------------------- #
+# Position persistence
+# --------------------------------------------------------------------------- #
+
+def test_save_and_load_position_roundtrip(tmp_path):
+    path = str(tmp_path / "state.json")
+    pos = bot.Position(5.0, 100.0, 98.0, 105.0, ("bracket-1",))
+    bot.save_position(pos, path=path)
+    loaded = bot.load_position(path=path)
+    assert loaded == pos
+    assert loaded.protective_order_ids == ("bracket-1",)
+
+
+def test_save_none_removes_state_file(tmp_path):
+    path = str(tmp_path / "state.json")
+    bot.save_position(bot.Position(5.0, 100.0, 98.0, 105.0), path=path)
+    assert os.path.exists(path)
+    bot.save_position(None, path=path)
+    assert not os.path.exists(path)
+
+
+def test_load_position_missing_file_returns_none(tmp_path):
+    assert bot.load_position(path=str(tmp_path / "nope.json")) is None

@@ -77,15 +77,40 @@ pytest
 The tests mock the ccxt exchange, so they make no network calls and place no
 orders.
 
+## Exchange-side protective orders (optional, unverified)
+
+By default, stop-loss / take-profit are enforced **bot-side**: the running bot
+checks the current price against the levels every `LOOP_INTERVAL_SECONDS` and
+exits when one is hit. This is reliable while the bot is running, but if the
+process stops or price gaps past a level between checks, the exit is late or
+missed.
+
+Setting `USE_EXCHANGE_PROTECTIVE_ORDERS=true` makes the bot place a **server-side
+bracket order** (a take-profit limit with an attached stop-loss trigger, OCO) at
+entry, so the exchange enforces exits even if the bot is offline. The bot then
+reconciles each cycle: if the bracket has filled, it resets to flat; a
+discretionary sell signal cancels the bracket and market-sells.
+
+> ⚠️ **This path places real OCO/bracket orders and has NOT been verified against
+> live Coinbase from this project.** The exact ccxt/Coinbase order parameters can
+> vary by account and API version. Before trusting it: enable it with a **very
+> small** amount, place one trade, and confirm in the Coinbase UI that the
+> bracket appears and behaves as expected. Until then, leave it `false` and rely
+> on bot-side monitoring.
+
+## Position persistence
+
+The open position is written to `POSITION_STATE_FILE` (default
+`position_state.json`, git-ignored) after each cycle and reloaded on startup, so
+the bot resumes managing exits for a trade opened in a previous run.
+
 ## Known limitations
 
-- **Protective exits are bot-side, not exchange-side.** Stop-loss / take-profit
-  are enforced by the running bot checking price each cycle (every
-  `LOOP_INTERVAL_SECONDS`). If the process stops, or price gaps past a level
-  between checks, the exit will be late or missed. Exchange-side bracket/OCO
-  orders are not yet implemented.
-- **Position state is in-memory only.** Restarting the bot forgets any open
-  position, so it will not manage exits for a trade opened in a previous run.
-- The backtest is simplified: no fees or slippage; fills at each candle's close.
+- Bot-side exits only act once per `LOOP_INTERVAL_SECONDS` and only while the bot
+  runs; see the exchange-side option above for stronger guarantees.
+- Exchange-side bracket orders are **unverified** against live Coinbase — test
+  before relying on them.
+- The backtest is simplified: no fees or slippage; fills at each candle's close,
+  and it always uses bot-side exits.
 
 See `CLAUDE.md` for guidance aimed at AI assistants working in this repo.

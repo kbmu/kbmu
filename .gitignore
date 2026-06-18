@@ -3,6 +3,9 @@
 *.pem
 *.key
 
+# Runtime state
+position_state.json
+
 # Logs
 *.log
 
