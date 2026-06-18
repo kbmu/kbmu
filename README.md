@@ -22,6 +22,12 @@ A trade signal requires several indicators to agree:
 and price below the lower Bollinger band. **Sell** is the mirror condition.
 All tunables live in the `parameters` dict in `trading_bot.py`.
 
+The bot is **long-only** and tracks one position at a time: it buys to open,
+then closes on whichever comes first — a stop-loss hit, a take-profit hit, or a
+sell signal. Stop-loss / take-profit levels (`stop_loss_percentage`,
+`take_profit_percentage`) are enforced by the bot, which checks the current
+price against them on every cycle.
+
 ## Setup
 
 1. Install dependencies:
@@ -61,13 +67,25 @@ and intend to trade real funds.
 - If a key is ever exposed, revoke/rotate it immediately at the Coinbase API
   settings page and change any related passwords.
 
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The tests mock the ccxt exchange, so they make no network calls and place no
+orders.
+
 ## Known limitations
 
-- `stop_loss_percentage` / `take_profit_percentage` are computed and logged but
-  **not yet enforced** as exchange-side protective orders. Do not rely on them
-  for risk control.
-- The backtest is simplified: no fees, slippage, or stop/take exits, and fills
-  at each candle's close.
-- There is no automated test suite yet.
+- **Protective exits are bot-side, not exchange-side.** Stop-loss / take-profit
+  are enforced by the running bot checking price each cycle (every
+  `LOOP_INTERVAL_SECONDS`). If the process stops, or price gaps past a level
+  between checks, the exit will be late or missed. Exchange-side bracket/OCO
+  orders are not yet implemented.
+- **Position state is in-memory only.** Restarting the bot forgets any open
+  position, so it will not manage exits for a trade opened in a previous run.
+- The backtest is simplified: no fees or slippage; fills at each candle's close.
 
 See `CLAUDE.md` for guidance aimed at AI assistants working in this repo.

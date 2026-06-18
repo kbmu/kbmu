@@ -71,6 +71,10 @@ Indicators = namedtuple(
     ["rsi", "sma", "macd", "macd_signal", "bb_upper", "bb_lower", "trend"],
 )
 
+# An open long position and its protective exit levels. The bot is long-only:
+# it buys to open and sells to close.
+Position = namedtuple("Position", ["size", "entry_price", "stop_loss", "take_profit"])
+
 
 def build_exchange():
     """Create the ccxt exchange client, validating credentials are present."""
@@ -200,6 +204,34 @@ def should_sell(ind, price):
     )
 
 
+def protective_levels(entry_price):
+    """Stop-loss and take-profit prices for a long opened at entry_price."""
+    stop_loss = entry_price * (1 - parameters["stop_loss_percentage"])
+    take_profit = entry_price * (1 + parameters["take_profit_percentage"])
+    return stop_loss, take_profit
+
+
+def evaluate(position, ind, price):
+    """Decide the action for this cycle.
+
+    Returns a ``(action, reason)`` pair where action is one of ``"open"``,
+    ``"close"``, or ``"hold"``. Protective exits (stop-loss / take-profit) take
+    priority over strategy signals when a position is open.
+    """
+    if position is None:
+        if should_buy(ind, price):
+            return "open", "buy_signal"
+        return "hold", None
+
+    if price <= position.stop_loss:
+        return "close", "stop_loss"
+    if price >= position.take_profit:
+        return "close", "take_profit"
+    if should_sell(ind, price):
+        return "close", "sell_signal"
+    return "hold", None
+
+
 def place_order(exchange, order_type, amount):
     """Submit a market order (or simulate it in DRY_RUN mode)."""
     if amount <= 0:
@@ -229,12 +261,13 @@ def place_order(exchange, order_type, amount):
 def backtest_strategy(data):
     """Replay the strategy over historical candles using only historical data.
 
-    Note: this is a simplified backtest. It does not model fees, slippage, or
-    stop-loss/take-profit exits, and uses each candle's close as the fill price.
+    Models the same long-only state machine as live trading, including
+    stop-loss / take-profit exits, with each candle's close as the fill price.
+    Note: it does not model fees or slippage.
     """
     initial_balance = 1000.0
     balance = initial_balance
-    position = 0.0
+    position = None
     market_price = None
 
     # Start once enough candles exist for the longest-window indicator.
@@ -244,23 +277,31 @@ def backtest_strategy(data):
         ind = calculate_indicators(window)
         market_price = window["close"].iloc[-1]
 
-        if position == 0 and should_buy(ind, market_price):
+        action, reason = evaluate(position, ind, market_price)
+        if action == "open":
             size = position_size_for(balance, market_price)
             if size > 0:
-                position += size
+                stop_loss, take_profit = protective_levels(market_price)
+                position = Position(size, market_price, stop_loss, take_profit)
                 balance -= size * market_price
                 logging.info("Backtest Buy: %s %s at %s", size, SYMBOL, market_price)
-
-        elif position > 0 and should_sell(ind, market_price):
-            balance += position * market_price
-            logging.info("Backtest Sell: %s %s at %s", position, SYMBOL, market_price)
-            position = 0.0
+        elif action == "close":
+            balance += position.size * market_price
+            logging.info(
+                "Backtest Sell (%s): %s %s at %s",
+                reason,
+                position.size,
+                SYMBOL,
+                market_price,
+            )
+            position = None
 
     if market_price is None:
         logging.warning("Backtest skipped: not enough historical data for warmup.")
         return
 
-    final_balance = balance + position * market_price
+    held = position.size if position else 0.0
+    final_balance = balance + held * market_price
     logging.info(
         "Backtest completed. Initial Balance: %s, Final Balance: %s",
         initial_balance,
@@ -268,8 +309,8 @@ def backtest_strategy(data):
     )
 
 
-def run_once(exchange):
-    """Execute a single decision cycle."""
+def run_once(exchange, position):
+    """Execute a single decision cycle, returning the (possibly new) position."""
     market_price = get_market_price(exchange)
     logging.info("Current market price: %s", market_price)
 
@@ -277,27 +318,31 @@ def run_once(exchange):
     ind = calculate_indicators(historical_data)
     logging.info("Current indicators: %s", ind)
 
-    balance = get_balance(exchange)
-    size = position_size_for(balance, market_price)
+    action, reason = evaluate(position, ind, market_price)
 
-    if should_buy(ind, market_price):
-        logging.info("Buy conditions met.")
-        place_order(exchange, "buy", size)
-        logging.info(
-            "Stop loss target: %s, take profit target: %s",
-            market_price * (1 - parameters["stop_loss_percentage"]),
-            market_price * (1 + parameters["take_profit_percentage"]),
-        )
-    elif should_sell(ind, market_price):
-        logging.info("Sell conditions met.")
-        place_order(exchange, "sell", size)
-        logging.info(
-            "Stop loss target: %s, take profit target: %s",
-            market_price * (1 + parameters["stop_loss_percentage"]),
-            market_price * (1 - parameters["take_profit_percentage"]),
-        )
+    if action == "open":
+        balance = get_balance(exchange)
+        size = position_size_for(balance, market_price)
+        logging.info("Buy signal: opening position of %s %s", size, SYMBOL)
+        order = place_order(exchange, "buy", size)
+        if order is not None:
+            stop_loss, take_profit = protective_levels(market_price)
+            position = Position(size, market_price, stop_loss, take_profit)
+            logging.info(
+                "Position opened at %s. Stop loss: %s, take profit: %s",
+                market_price,
+                stop_loss,
+                take_profit,
+            )
+    elif action == "close":
+        logging.info("Exit signal (%s): closing position.", reason)
+        order = place_order(exchange, "sell", position.size)
+        if order is not None:
+            position = None
     else:
-        logging.info("No trade signal this cycle.")
+        logging.info("No action this cycle (holding=%s).", position is not None)
+
+    return position
 
 
 def main():
@@ -311,9 +356,12 @@ def main():
     historical_data = fetch_historical_data(exchange)
     backtest_strategy(historical_data)
 
+    # In-memory position state. NOTE: this is lost if the process restarts, so
+    # protective exits only apply while the bot is running.
+    position = None
     while True:
         try:
-            run_once(exchange)
+            position = run_once(exchange, position)
         except Exception as exc:  # noqa: BLE001 - keep the loop alive on transient errors
             logging.error("An error occurred in main loop: %s", exc)
         time.sleep(LOOP_INTERVAL_SECONDS)

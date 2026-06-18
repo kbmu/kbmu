@@ -30,12 +30,16 @@ without sending them to the exchange. Real trading only happens when
 
 ```
 .
-├── trading_bot.py   # The trading bot (single-module Python program)
-├── requirements.txt # Python dependencies (ccxt, pandas, numpy, ta)
-├── .env.example     # Template for required environment variables
-├── .gitignore       # Ignores .env, logs, key files, Python caches
-├── README.md        # User-facing setup & usage docs
-└── CLAUDE.md        # This file
+├── trading_bot.py       # The trading bot (single-module Python program)
+├── tests/
+│   └── test_trading_bot.py  # pytest smoke tests (mock the ccxt exchange)
+├── requirements.txt     # Runtime dependencies (ccxt, pandas, numpy, ta)
+├── requirements-dev.txt # Runtime deps + pytest
+├── pytest.ini           # pytest configuration
+├── .env.example         # Template for required environment variables
+├── .gitignore           # Ignores .env, logs, key files, Python caches
+├── README.md            # User-facing setup & usage docs
+└── CLAUDE.md            # This file
 ```
 
 ## How the bot works
@@ -51,6 +55,14 @@ library) and only trades when they agree:
 
 All tunables live in the `parameters` dict near the top of `trading_bot.py`.
 
+The bot is **long-only** and tracks a single open position via the `Position`
+namedtuple (`size`, `entry_price`, `stop_loss`, `take_profit`). The decision
+logic is a small state machine in `evaluate`: when flat, a buy signal opens a
+position; when in a position, a stop-loss or take-profit hit (priority) or a
+sell signal closes it. Protective exits are enforced **bot-side** (price checked
+each cycle), not as exchange-side bracket/OCO orders, and the position is held
+**in memory only** (lost on restart).
+
 Key functions:
 
 | Function | Responsibility |
@@ -62,16 +74,30 @@ Key functions:
 | `calculate_indicators` | Returns an `Indicators` namedtuple (no positional indexing) |
 | `position_size_for` | Size a position from `balance × risk_percentage / price` |
 | `should_buy` / `should_sell` | Named strategy conditions |
+| `protective_levels` | Compute stop-loss / take-profit prices for a long entry |
+| `evaluate` | Pure state machine returning `(action, reason)` for a cycle |
 | `place_order` | Submit market orders, or simulate them when `DRY_RUN` is on |
-| `backtest_strategy` | Replays the strategy over historical candles only |
-| `run_once` | One live decision cycle |
+| `backtest_strategy` | Replays the strategy (incl. SL/TP exits) over historical candles |
+| `run_once` | One live decision cycle; takes/returns the current `Position` |
 | `main` | Backtests once, then loops every `LOOP_INTERVAL_SECONDS` |
 
 Execution flow (`main`): validate creds → backtest on startup → loop: fetch
-price → fetch candles → compute indicators → check buy/sell → place (or
-simulate) order → sleep. Loop errors are logged and the loop continues.
+price → fetch candles → compute indicators → `evaluate` action → open/close (or
+simulate) → sleep. Loop errors are logged and the loop continues.
 
 Logging goes to `trading_bot.log` and is echoed to the console.
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests mock the ccxt exchange (no network, no real orders). `evaluate`,
+`should_buy`/`should_sell`, `position_size_for`, `protective_levels`, and
+`place_order` are pure/easily mocked — keep them that way so new logic stays
+testable. Tests force `DRY_RUN` via `monkeypatch.setattr(bot, "DRY_RUN", ...)`.
 
 ## Configuration (environment variables)
 
@@ -104,13 +130,15 @@ Quick syntax check: `python -m py_compile trading_bot.py`.
 ## Known issues & conventions for future changes
 
 - **Secrets**: keep them in env vars only; never hard-code or echo them.
-- **Stop-loss / take-profit not enforced**: target prices are computed and
-  logged but no protective orders are placed on the exchange. Flag this before
-  relying on them; implementing real bracket/OCO orders is a known TODO.
-- **Backtest is simplified**: no fees, slippage, or stop/take exits; fills at
-  each candle's close. (It no longer makes live network calls during replay.)
-- **No tests yet**: new logic should come with at least a smoke test that mocks
-  the `ccxt` exchange.
+- **Protective exits are bot-side, not exchange-side**: stop-loss / take-profit
+  are enforced by the running bot checking price each cycle, not by bracket/OCO
+  orders on the exchange. If the process stops, or price gaps between checks,
+  exits are late or missed. Real exchange-side protective orders remain a TODO.
+- **Position state is in-memory**: a restart forgets any open position, so the
+  bot won't manage exits for a trade opened in a previous run. Persisting state
+  is a possible improvement.
+- **Backtest is simplified**: no fees or slippage; fills at each candle's close.
+  It models the same SL/TP/sell-signal exits as live and makes no network calls.
 - **Live trading risk**: this code can place **real market orders**. Keep
   `DRY_RUN=true` for any testing; never point it at a funded account casually.
 
