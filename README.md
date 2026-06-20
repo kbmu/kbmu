@@ -46,10 +46,17 @@ price against them on every cycle.
 
 ## Running
 
+The bot automatically reads your `.env` file on startup (via `python-dotenv`),
+so you can just run:
+
 ```bash
-set -a && source .env && set +a   # load environment variables
 python trading_bot.py
 ```
+
+On **Windows** (PowerShell), if Python isn't on your PATH, call it by full path,
+e.g. `& "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe" trading_bot.py`.
+
+New users: see **[SETUP.md](SETUP.md)** for a step-by-step Windows walkthrough.
 
 The bot runs a quick backtest on startup, then enters a loop that evaluates the
 strategy every `LOOP_INTERVAL_SECONDS` (default 60s). Activity is written to

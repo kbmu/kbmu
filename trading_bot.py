@@ -33,6 +33,17 @@ logging.basicConfig(
 # Also echo logs to the console so it's clear what the bot is doing.
 logging.getLogger().addHandler(logging.StreamHandler())
 
+# Load variables from a local .env file if python-dotenv is installed. This is
+# the cross-platform way to provide configuration (works on Windows PowerShell,
+# where `source .env` is not available). It is optional: if python-dotenv isn't
+# installed, environment variables set another way are still used.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
 # Credentials come from the environment. NEVER hard-code secrets in source.
 API_KEY = os.environ.get("COINBASE_API_KEY")
 API_SECRET = os.environ.get("COINBASE_API_SECRET")
